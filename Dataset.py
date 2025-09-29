@@ -3,6 +3,7 @@ import csv
 import functools
 import glob
 import os
+import logging
 from collections import namedtuple
 import SimpleITK as sitk
 import numpy as np
@@ -11,6 +12,15 @@ from dataclasses import dataclass, field
 import torch
 import torch.cuda
 from torch.utils.data import Dataset
+
+
+# 设置日志输出
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 
 # 创建轻量级的、不可变的类，类似于元组，但每个元素可以通过名称访问，适合存储结构化的数据。
