@@ -15,6 +15,15 @@ from Dataset import LunaDataset
 from Model import LunaModel
 
 
+# 设置日志输出
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+
 METRICS_LABEL_NDX=0
 METRICS_PRED_NDX=1
 METRICS_LOSS_NDX=2
@@ -28,50 +37,63 @@ def enumerateWithEstimate(
         backoff=None,
         iter_len=None,
 ):
-
+    """
+    对输入进行迭代，并返回一个带索引的序列，同时提供进度跟踪的功能
+    :param iter: 可迭代对象
+    :param desc_str: 一句用于输出的描述语句
+    :param start_ndx: 起始索引，表示从第几项开始迭代
+    :param print_ndx: 下次输出日志的索引
+    :param backoff: 控制日志输出的频率
+    :param iter_len: 可迭代对象的长度
+    """
+    # 如果未传入可迭代对象则计算
     if iter_len is None:
         iter_len = len(iter)
 
+    # 如果没有传入backoff则自行计算其值
     if backoff is None:
         backoff = 2
         while backoff ** 7 < iter_len:
             backoff *= 2
 
+    # 确保backoff大于2
     assert backoff >= 2
     while print_ndx < start_ndx * backoff:
         print_ndx *= backoff
 
-    logging.warning("{} ----/{}, starting".format(
+    logger.warning("{} ----/{}, 迭代开始".format(
         desc_str,
         iter_len,
     ))
+
     start_ts = time.time()
     for (current_ndx, item) in enumerate(iter):
+        # 使用yield关键字，将数据一步一步传出，避免一次性传出所有数据
         yield (current_ndx, item)
         if current_ndx == print_ndx:
-            # ... <1>
-            duration_sec = ((time.time() - start_ts)
-                            / (current_ndx - start_ndx + 1)
-                            * (iter_len-start_ndx)
+            # 计算剩余还需时间
+            duration_sec = ((time.time() - start_ts)    # 已经使用的时间
+                            / (current_ndx - start_ndx + 1)    # 已经完成的数量
+                            * (iter_len-start_ndx)    # 总数量
                             )
 
+            # 将预计完成时间和剩余时间转化为可读的形式
             done_dt = datetime.datetime.fromtimestamp(start_ts + duration_sec)
             done_td = datetime.timedelta(seconds=duration_sec)
 
-            logging.info("{} {:-4}/{}, done at {}, {}".format(
+            # -4表示左对齐占用4个字符
+            logger.info("{} {:-4}/{}, done at {}, {}".format(
                 desc_str,
                 current_ndx,
                 iter_len,
-                str(done_dt).rsplit('.', 1)[0],
-                str(done_td).rsplit('.', 1)[0],
+                str(done_dt).rsplit('.', 1)[0], # 转化为字符串，并去除微秒部分
+                str(done_td).rsplit('.', 1)[0], # 同上
             ))
 
+            # 更新下一次输出位置
             print_ndx *= backoff
 
-        if current_ndx + 1 == start_ndx:
-            start_ts = time.time()
-
-    logging.warning("{} ----/{}, done at {}".format(
+    logger.warning("{} ----/{}, done at {}".format(
         desc_str,
         iter_len,
         str(datetime.datetime.now()).rsplit('.', 1)[0],
@@ -79,39 +101,7 @@ def enumerateWithEstimate(
 
 
 class LunaTrain:
-
-    def __init__(self, args=None):
-        if sys.argv is None:
-            sys.args = sys.argv[:1]
-
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--num-workers',
-                            help='Number of worker processes for background data loading',
-                            default=0,
-                            type=int,
-                            )
-        parser.add_argument('--batch-size',
-                            help='Batch size to use for training',
-                            default=32,
-                            type=int,
-                            )
-        parser.add_argument('--epochs',
-                            help='Number of epochs to train for',
-                            default=1,
-                            type=int,
-                            )
-
-        parser.add_argument('--tb-prefix',
-                            default='p2ch11',
-                            help="Data prefix to use for Tensorboard run. Defaults to chapter.",
-                            )
-
-        parser.add_argument('comment',
-                            help="Comment suffix for Tensorboard run.",
-                            nargs='?',
-                            default='dwlpt',
-                            )
-
+    def __init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.trn_writer = None
@@ -129,7 +119,7 @@ class LunaTrain:
         model = LunaModel()
 
         if torch.cuda.is_available():
-            logging.info("Using CUDA; {} devices".format(torch.cuda.device_count()))
+            logger.info("Using CUDA; {} devices".format(torch.cuda.device_count()))
 
             # 如果设备有多个GPU，则使用nn.DataParallel类可以将工作分配给所有GPU
             if torch.cuda.device_count() > 1:
@@ -140,6 +130,7 @@ class LunaTrain:
         return model
 
     def init_optimizer(self):
+        """初始化优化器"""
         return torch.optim.SGD(self.model.parameters(), lr=0.001, momentum=0.99)
 
     def init_data(self, is_val):
@@ -156,184 +147,126 @@ class LunaTrain:
         data_loader = DataLoader(
             data_set,
             batch_size=batch_size,
-            num_workers=self.args.num_workers,
             pin_memory=True,
         )
 
         return data_loader
 
-    def batch_loss(self, batch_ndx, batch_tuple, batch_size, train_measure):
+    def batch_loss(self, batch_ndx, batch_tuple, batch_size, metrics):
+        """
+        提取数据进行前向传播，并进行批次loss的运算
+        :param batch_ndx:   当前批次的索引，用于跟踪当前处理的批次。
+        :param batch_tuple:    包含输入数据、标签等信息的元组。
+        :param batch_size:     每个批次的大小
+        :param metrics:   存储指标
+        :return: 返回批次loss的平均值
+        """
+        # input_t：数据；label_t：标签
         input_t, label_t, _series_list, _center_list = batch_tuple
 
+        # 将数据转移到gpu上，non_blocking=True表示异步数据传输
         input_g = input_t.to(self.device, non_blocking=True)
         label_g = label_t.to(self.device, non_blocking=True)
 
-        logits_g, probability_g = self.model(input_g)
+        # 调用模型并自动进行前向传播，结果分别为未归一化的输出和归一化后的概率输出
+        logits, probability = self.model(input_g)
 
+        # reduction='none' 表示不对损失进行归约（即不求平均或求和），返回每个样本的损失值。
         loss_func = nn.CrossEntropyLoss(reduction='none')
-        loss_g = loss_func(
-            logits_g,
-            label_g[:, 1],
+        loss = loss_func(
+            logits,
+            label_g[:, 1],  # 提取第二列的标签
         )
+
+        # 计算当前批次在metrics中的位置
         start_ndx = batch_ndx * batch_size
         end_ndx = start_ndx + label_t.size(0)
 
-        train_measure[METRICS_LABEL_NDX, start_ndx:end_ndx] = \
+        # 从张量中提取真实标签，预测概率，loss并存取在metrics张量中。.detach()是创建一个新的副本并取消梯度，不影响原有张量
+        metrics[METRICS_LABEL_NDX, start_ndx:end_ndx] = \
             label_g[:, 1].detach()
-        train_measure[METRICS_PRED_NDX, start_ndx:end_ndx] = \
-            probability_g[:, 1].detach()
-        train_measure[METRICS_LOSS_NDX, start_ndx:end_ndx] = \
-            loss_g.detach()
+        metrics[METRICS_PRED_NDX, start_ndx:end_ndx] = \
+            probability[:, 1].detach()
+        metrics[METRICS_LOSS_NDX, start_ndx:end_ndx] = \
+            loss.detach()
 
-        return loss_g.mean()
+        return loss.mean()
 
-    def logMetrics(
-            self,
-            epoch_ndx,
-            mode_str,
-            metrics_t,
-            classificationThreshold=0.5,
-    ):
-        self.initTensorboardWriters()
-        logging.info("E{} {}".format(
-            epoch_ndx,
-            type(self).__name__,
+    def log_metrics(self, epoch_nax, desc_str, metrics,):
+
+        self.Threshold = 0.5
+
+        label = metrics[METRICS_LABEL_NDX,:]
+        prediction = metrics[METRICS_PRED_NDX,:]
+        loss = metrics[METRICS_LOSS_NDX,:]
+
+        pos_label = label >= self.Threshold
+        neg_label = label < self.Threshold
+
+        pos_pred = prediction >= self.Threshold
+        neg_pred = prediction < self.Threshold
+
+        neg_count = int(neg_label.sum())
+        pos_count = int(pos_label.sum())
+
+        true_neg_count = neg_correct = int((neg_label & neg_pred).sum())
+        true_pos_count = pos_correct = int((pos_label & pos_pred).sum())
+
+        false_pos_count = neg_count - neg_correct
+        false_neg_count = pos_count - pos_correct
+
+
+        accuracy = (true_neg_count + true_pos_count) / (neg_count + pos_count)
+        precision = true_pos_count / (true_pos_count + false_pos_count)
+        recall = true_pos_count / (true_pos_count + false_neg_count)
+
+        logger.info("第{}个Epoch，{}的结果为，accuracy：{}；precision：{}；recall：{}".format(
+            epoch_nax,
+            desc_str,
+            accuracy,
+            precision,
+            recall,
         ))
 
-        negLabel_mask = metrics_t[METRICS_LABEL_NDX] <= classificationThreshold
-        negPred_mask = metrics_t[METRICS_PRED_NDX] <= classificationThreshold
-
-        posLabel_mask = ~negLabel_mask
-        posPred_mask = ~negPred_mask
-
-        neg_count = int(negLabel_mask.sum())
-        pos_count = int(posLabel_mask.sum())
-
-        neg_correct = int((negLabel_mask & negPred_mask).sum())
-        pos_correct = int((posLabel_mask & posPred_mask).sum())
-
-        metrics_dict = {}
-        metrics_dict['loss/all'] = \
-            metrics_t[METRICS_LOSS_NDX].mean()
-        metrics_dict['loss/neg'] = \
-            metrics_t[METRICS_LOSS_NDX, negLabel_mask].mean()
-        metrics_dict['loss/pos'] = \
-            metrics_t[METRICS_LOSS_NDX, posLabel_mask].mean()
-
-        metrics_dict['correct/all'] = (pos_correct + neg_correct) \
-            / np.float32(metrics_t.shape[1]) * 100
-        metrics_dict['correct/neg'] = neg_correct / np.float32(neg_count) * 100
-        metrics_dict['correct/pos'] = pos_correct / np.float32(pos_count) * 100
-
-        logging.info(
-            ("E{} {:8} {loss/all:.4f} loss, "
-                 + "{correct/all:-5.1f}% correct, "
-            ).format(
-                epoch_ndx,
-                mode_str,
-                **metrics_dict,
-            )
-        )
-        logging.info(
-            ("E{} {:8} {loss/neg:.4f} loss, "
-                 + "{correct/neg:-5.1f}% correct ({neg_correct:} of {neg_count:})"
-            ).format(
-                epoch_ndx,
-                mode_str + '_neg',
-                neg_correct=neg_correct,
-                neg_count=neg_count,
-                **metrics_dict,
-            )
-        )
-        logging.info(
-            ("E{} {:8} {loss/pos:.4f} loss, "
-                 + "{correct/pos:-5.1f}% correct ({pos_correct:} of {pos_count:})"
-            ).format(
-                epoch_ndx,
-                mode_str + '_pos',
-                pos_correct=pos_correct,
-                pos_count=pos_count,
-                **metrics_dict,
-            )
-        )
-
-        writer = getattr(self, mode_str + '_writer')
-
-        for key, value in metrics_dict.items():
-            writer.add_scalar(key, value, self.totalTrainingSamples_count)
-
-        writer.add_pr_curve(
-            'pr',
-            metrics_t[METRICS_LABEL_NDX],
-            metrics_t[METRICS_PRED_NDX],
-            self.totalTrainingSamples_count,
-        )
-
-        bins = [x/50.0 for x in range(51)]
-
-        negHist_mask = negLabel_mask & (metrics_t[METRICS_PRED_NDX] > 0.01)
-        posHist_mask = posLabel_mask & (metrics_t[METRICS_PRED_NDX] < 0.99)
-
-        if negHist_mask.any():
-            writer.add_histogram(
-                'is_neg',
-                metrics_t[METRICS_PRED_NDX, negHist_mask],
-                self.totalTrainingSamples_count,
-                bins=bins,
-            )
-        if posHist_mask.any():
-            writer.add_histogram(
-                'is_pos',
-                metrics_t[METRICS_PRED_NDX, posHist_mask],
-                self.totalTrainingSamples_count,
-                bins=bins,
-            )
-
-        score = 1 \
-            + metrics_dict['pr/f1_score'] \
-            - metrics_dict['loss/mal'] * 0.01 \
-            - metrics_dict['loss/all'] * 0.0001
-
-        return score
-
-
-    def train(self, epoch, train_data):
-
+    def train(self, epoch_ndx, train_data):
+        """
+        基于训练集的模型前向传播和反向传播更新
+        :param epoch_ndx: 当前训练循环数
+        :param train_data:  训练集
+        :return: 返回存储训练指标的张量并转移到cpu上
+        """
+        # 模型进入训练模式
         self.model.train()
+
+        # 创建一个全零张量，存储训练阶段产生的指标
         trnMetrics_g = torch.zeros(
-            METRICS_SIZE,
-            len(train_data.dataset),
+            METRICS_SIZE,   # 表示要跟踪的指标数量
+            len(train_data.dataset),    # 验证数据集的样本总数
             device=self.device,
         )
 
-        # batch_iter = enumerateWithEstimate(
-        #     train_data,
-        #     "E{} Training".format(epoch),
-        #     start_ndx=train_data.num_workers,
-        # )
+        batch_iter = enumerateWithEstimate(
+            train_data,
+            "Epoch{} Training".format(epoch_ndx),
+        )
 
-        batch_iter = enumerate(train_data)
+        # # 将训练集转化为一个带索引的序列
+        # batch_iter = enumerate(train_data)
 
-        print(len(train_data))
-
-        a = 1
-
-        for batch_ndx, batch_tup in batch_iter:
-
-            print(f'第{a}次训练')
-
-            a = a + 1
-
+        for batch_ndx, batch_tuple in batch_iter:
+            # 清空优化器中的梯度，避免梯度累积
             self.optimizer.zero_grad()
 
-            loss_var = self.batch_loss(
+            # 计算当前批次的loss
+            loss = self.batch_loss(
                 batch_ndx,
-                batch_tup,
+                batch_tuple,
                 train_data.batch_size,
-                trnMetrics_g
+                trnMetrics_g    # 将张量传入，可以直接进行修改，并且不需要return出来
             )
 
-            loss_var.backward()
+            # 执行反向传播并更新模型参数
+            loss.backward()
             self.optimizer.step()
 
             # # This is for adding the model graph to TensorBoard.
@@ -343,39 +276,52 @@ class LunaTrain:
             #         self.trn_writer.add_graph(model, batch_tup[0], verbose=True)
             #         self.trn_writer.close()
 
+        # 累加样本总量
         self.totalTrainingSamples_count += len(train_data.dataset)
 
         return trnMetrics_g.to('cpu')
 
-    def test(self, epoch_ndx, val_dl):
+    def test(self, epoch_ndx, val_data):
+        """
+        基于验证集进行模型评估，禁用模型更新
+        :param epoch_ndx: 当前训练循环数
+        :param val_data: 验证集
+        :return: 返回存储模型指标的张量并转移到cpu上
+        """
+        # 禁用梯度计算，验证阶段不需要反向传播
         with torch.no_grad():
+            # 模型进入评估模式，在当前模式会禁用如batchnorm和dropout等会影响模型稳定性的功能
             self.model.eval()
+
+            # 创建一个全零张量，存储验证阶段产生的指标
             valMetrics_g = torch.zeros(
-                METRICS_SIZE,
-                len(val_dl.dataset),
+                METRICS_SIZE,   # 表示要跟踪的指标数量
+                len(val_data.dataset),  # 验证数据集的样本总数
                 device=self.device,
             )
 
             batch_iter = enumerateWithEstimate(
-                val_dl,
-                "E{} Validation ".format(epoch_ndx),
-                start_ndx=val_dl.num_workers,
+                val_data,
+                "Epoch{} Validation ".format(epoch_ndx),
             )
-            for batch_ndx, batch_tup in batch_iter:
-                self.batch_loss(
-                    batch_ndx, batch_tup, val_dl.batch_size, valMetrics_g)
+
+            # # 将验证集转化为一个带索引的序列
+            # batch_iter = enumerate(val_data)
+
+            for batch_ndx, batch_tuple in batch_iter:
+                self.batch_loss(batch_ndx, batch_tuple, val_data.batch_size, valMetrics_g)
 
         return valMetrics_g.to('cpu')
 
     def main(self):
-        logging.info("开始{}，{}".format(type(self).__name__, self.args))
+        logger.info("开始{}，{}".format(type(self).__name__, self.args))
 
         train_data = self.init_data(is_val=False)
         val_data = self.init_data(is_val=True)
 
         for epoch_ndx in range(1, self.args.epochs + 1):
 
-            logging.info("Epoch {} of {}, {}/{} batches of size {}*{}".format(
+            logger.info("Epoch {} of {}, {}/{} batches of size {}*{}".format(
                 epoch_ndx,
                 self.args.epochs,
                 len(train_data),
@@ -384,23 +330,39 @@ class LunaTrain:
                 (torch.cuda.device_count()),
             ))
 
-            trnMetrics_t = self.train(epoch_ndx, train_data)
-            self.logMetrics(epoch_ndx, 'trn', trnMetrics_t)
+            train_metrics_t = self.train(epoch_ndx, train_data)
+            self.log_metrics(epoch_ndx, desc_str='训练集', metrics=train_metrics_t)
 
-            valMetrics_t = self.test(epoch_ndx, val_data)
-            self.logMetrics(epoch_ndx, 'val', valMetrics_t)
+            val_metrics_t = self.test(epoch_ndx, val_data)
+            self.log_metrics(epoch_ndx, desc_str='验证集', metrics=val_metrics_t)
 
-        if hasattr(self, 'trn_writer'):
-            self.trn_writer.close()
-            self.val_writer.close()
+        # if hasattr(self, 'trn_writer'):
+        #     self.trn_writer.close()
+        #     self.val_writer.close()
 
 
 if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--batch-size',
+                        help='Batch size to use for training',
+                        default=32,
+                        type=int,
+                        )
+    parser.add_argument('--epochs',
+                        help='Number of epochs to train for',
+                        default=10,
+                        type=int,
+                        )
+
+    parser.add_argument('comment',
+                        help="Comment suffix for Tensorboard run.",
+                        nargs='?',
+                        default='dwlpt',
+                        )
+
     LunaTrain().main()
-
-
-
-
 
 
 
