@@ -1,9 +1,18 @@
 import math
+import logging
 
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
+
+# 设置日志输出
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 
 class Block(nn.Module):
@@ -17,7 +26,7 @@ class Block(nn.Module):
 
         # （3，3，3）大小的卷积核，填充一个像素，需要偏置
         self.conv1 = nn.Conv3d(in_channels, conv_channels, kernel_size=3, padding=1, bias=True)
-        self.relu1 = nn.ReLU(inplace=True)
+        self.relu1 = nn.ReLU(inplace=True)  # 为True表示可以直接修改张量
         self.conv2 = nn.Conv3d(conv_channels, conv_channels, kernel_size=3, padding=1, bias=True)
         self.relu2 = nn.ReLU(inplace=True)
 
@@ -34,12 +43,12 @@ class Block(nn.Module):
         return self.maxpool(out)
 
 
-
 class LunaModel(nn.Module):
-
+    """肺癌恶性结节分类模型"""
     def __init__(self, in_channels=1, conv_channels=8):
         super().__init__()
 
+        # 批量归一化层
         self.batchnorm = nn.BatchNorm3d(in_channels)
 
         self.block1 = Block(in_channels, conv_channels)
@@ -53,6 +62,7 @@ class LunaModel(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
+        """使用正态分布初始化权重，使用均匀分布初始化偏置"""
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
                 if type(m) in {nn.Linear, nn.Conv3d}:
@@ -62,10 +72,11 @@ class LunaModel(nn.Module):
                         bound = 1 / math.sqrt(fan_out)
                         nn.init.uniform_(m.bias, -bound, bound)
 
-
-
     def forward(self, input):
-
+        """
+        :param input: 数据
+        :return: 未归一化的输出，归一化后的输出
+        """
         out = self.batchnorm(input)
 
         out = self.block1(out)
@@ -73,16 +84,11 @@ class LunaModel(nn.Module):
         out = self.block3(out)
         out = self.block4(out)
 
+        # 将数据平展为二维张量
         linear_input = out.view(out.size(0), -1)
 
         linear_out = self.linear(linear_input)
         output = self.softmax(linear_out)
 
         return linear_out, output
-
-
-
-
-
-
 
