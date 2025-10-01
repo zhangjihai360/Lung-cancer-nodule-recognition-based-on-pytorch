@@ -111,6 +111,18 @@ class LunaTrain:
         self.args = parser.parse_args()
         self.time_start = datetime.datetime.now().strftime('%Y-%m-%d_%H.%M.%S')
 
+        self.augmentation_dict = {}
+        if self.args.augmented or self.args.augment_flip:
+            self.augmentation_dict['flip'] = True
+        if self.args.augmented or self.args.augment_offset:
+            self.augmentation_dict['offset'] = 0.1
+        if self.args.augmented or self.args.augment_scale:
+            self.augmentation_dict['scale'] = 0.2
+        if self.args.augmented or self.args.augment_rotate:
+            self.augmentation_dict['rotate'] = True
+        if self.args.augmented or self.args.augment_noise:
+            self.augmentation_dict['noise'] = 25.0
+
         self.model = self.init_model()
         self.optimizer = self.init_optimizer()
 
@@ -137,6 +149,8 @@ class LunaTrain:
         data_set = LunaDataset(
             val_stride=10,
             is_val=is_val,
+            ratio_int=int(self.args.balanced),
+            augmentation_dict=self.augmentation_dict,
         )
 
         batch_size = self.args.batch_size
@@ -148,6 +162,7 @@ class LunaTrain:
             data_set,
             batch_size=batch_size,
             pin_memory=True,
+            num_workers=self.args.num_workers,
         )
 
         return data_loader
@@ -350,22 +365,52 @@ if __name__ == '__main__':
                         default=32,
                         type=int,
                         )
+    parser.add_argument('--num-workers',
+                        help='Number of worker processes for background data loading',
+                        default=0,
+                        type=int,
+                        )
     parser.add_argument('--epochs',
                         help='Number of epochs to train for',
                         default=10,
                         type=int,
                         )
-
-    parser.add_argument('comment',
-                        help="Comment suffix for Tensorboard run.",
-                        nargs='?',
-                        default='dwlpt',
+    parser.add_argument('--balanced',
+                        help="Balance the training data to half positive, half negative.",
+                        action='store_true',
+                        default=False,
+                        )
+    parser.add_argument('--augmented',
+                        help="Augment the training data.",
+                        action='store_true',
+                        default=False,
+                        )
+    parser.add_argument('--augment-flip',
+                        help="Augment the training data by randomly flipping the data left-right, up-down, and front-back.",
+                        action='store_true',
+                        default=False,
+                        )
+    parser.add_argument('--augment-offset',
+                        help="Augment the training data by randomly offsetting the data slightly along the X and Y axes.",
+                        action='store_true',
+                        default=False,
+                        )
+    parser.add_argument('--augment-scale',
+                        help="Augment the training data by randomly increasing or decreasing the size of the candidate.",
+                        action='store_true',
+                        default=False,
+                        )
+    parser.add_argument('--augment-rotate',
+                        help="Augment the training data by randomly rotating the data around the head-foot axis.",
+                        action='store_true',
+                        default=False,
+                        )
+    parser.add_argument('--augment-noise',
+                        help="Augment the training data by randomly adding noise to the data.",
+                        action='store_true',
+                        default=False,
                         )
 
+
     LunaTrain().main()
-
-
-
-
-
 
